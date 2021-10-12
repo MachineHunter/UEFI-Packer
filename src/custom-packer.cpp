@@ -227,6 +227,20 @@ void AddExtSection(PE* pe, DWORD dwTargetBinSize, UINT extSize) {
 	DbgPrint("sizeOfRawData:%I32X, PointerToRawData: 0x%I32X", extSecHeader->SizeOfRawData, extSecHeader->PointerToRawData);
 }
 
+DWORD* CheckSecureBoot(PE* pe) {
+	DWORD* certificateTable = (DWORD*)pe->OptionalHeader->DataDirectory[4].VirtualAddress;
+	DbgPrint("Certificate is at offset: 0x%I32X", certificateTable);
+
+	if (certificateTable == 0) {
+		// checked by Hash (Secure Boot)
+		DbgPrint("[!!] This file is not packable. Exiting...");
+		exit(0);
+	}
+	
+	// checked by certificate
+	return certificateTable;
+}
+
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
 	bool bRes;
@@ -250,6 +264,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	PE* pe = (PE*)malloc(sizeof(PE));
 	ParsePE(pe, lpTargetBinBuffer);
 
+	// check if this is packable when secure-boot is enabled
+	// check by hash: exit
+	// check by certificate: get the address of certificate list
+	DWORD* certificateTable = CheckSecureBoot(pe);
 
 	// add ext section to put decode stub
 	AddExtSection(pe, dwTargetBinSize, extSize);
