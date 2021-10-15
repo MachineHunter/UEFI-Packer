@@ -26,6 +26,11 @@ typedef struct SectionConfig {
 	QWORD* characteristic;
 } SectionConfig;
 
+typedef struct SecurityDirectory {
+	DWORD rva;
+	DWORD size;
+} SecurityDirectory;
+
 
 void Err(const char* msg) {
 	MessageBox(NULL, TEXT(msg), TEXT("Error"), MB_OK | MB_ICONERROR);
@@ -210,13 +215,15 @@ void AddExtSection(PE* pe, DWORD dwTargetBinSize, UINT extSize) {
 	DWORD vaddrOffset = 0;
 	while (vaddrOffset < beforeSecHeader->Misc.VirtualSize)
 		vaddrOffset += pe->OptionalHeader->SectionAlignment;
+	DWORD buf = vaddrOffset - beforeSecHeader->Misc.VirtualSize; // buffer size due to section alignment
+	DbgPrint("alignment buf: 0x%I32X", buf);
 
 	char secname[5] = ".ext";
 	strncpy_s((char*)extSecHeader->Name, 8, secname, 5);
-	extSecHeader->Misc.VirtualSize = extSize;
+	extSecHeader->Misc.VirtualSize = extSize - buf;
 	extSecHeader->VirtualAddress = beforeSecHeader->VirtualAddress + vaddrOffset;
-	extSecHeader->SizeOfRawData = extSize;
-	extSecHeader->PointerToRawData = dwTargetBinSize;
+	extSecHeader->SizeOfRawData = extSize - buf;
+	extSecHeader->PointerToRawData = beforeSecHeader->VirtualAddress + vaddrOffset;
 	extSecHeader->PointerToRelocations = 0;
 	extSecHeader->PointerToLinenumbers = 0;
 	extSecHeader->NumberOfRelocations = 0;
@@ -227,18 +234,21 @@ void AddExtSection(PE* pe, DWORD dwTargetBinSize, UINT extSize) {
 	DbgPrint("sizeOfRawData:%I32X, PointerToRawData: 0x%I32X", extSecHeader->SizeOfRawData, extSecHeader->PointerToRawData);
 }
 
-DWORD* CheckSecureBoot(PE* pe) {
-	DWORD* certificateTable = (DWORD*)pe->OptionalHeader->DataDirectory[4].VirtualAddress;
-	DbgPrint("Certificate is at offset: 0x%I32X", certificateTable);
+void CheckSecureBoot(PE* pe, SecurityDirectory* secDir) {
+	IMAGE_DATA_DIRECTORY certificateTable = pe->OptionalHeader->DataDirectory[4];
+	secDir->rva = certificateTable.VirtualAddress;
+	secDir->size = certificateTable.Size;
+	
+	DbgPrint("Certificate is at offset: 0x%I32X", secDir->rva);
 
-	if (certificateTable == 0) {
+	if (secDir->rva == 0) {
 		// checked by Hash (Secure Boot)
 		DbgPrint("[!!] This file is not packable. Exiting...");
 		exit(0);
 	}
 	
 	// checked by certificate
-	return certificateTable;
+	return;
 }
 
 
@@ -267,7 +277,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	// check if this is packable when secure-boot is enabled
 	// check by hash: exit
 	// check by certificate: get the address of certificate list
-	DWORD* certificateTable = CheckSecureBoot(pe);
+	SecurityDirectory* secDir = (SecurityDirectory*)malloc(sizeof(SecurityDirectory));
+	CheckSecureBoot(pe, secDir);
+
 
 	// add ext section to put decode stub
 	AddExtSection(pe, dwTargetBinSize, extSize);
@@ -279,16 +291,28 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	FindSection(pe, target, ext);
 
 
-
 	// new entrypoint
 	QWORD newEP = ext->vaddr - pe->ImageBase;
 
-	// エントリーポイントを含むセクションを暗号化
+
+	// move certificate to the end of pe file
+	DWORD* certBuf = (DWORD*)malloc(sizeof(secDir->size));
+	memcpy((UCHAR*)certBuf, (UCHAR*)(secDir->rva + lpTargetBinBuffer), sizeof(DWORD) * secDir->size);
+	memset((UCHAR*)(secDir->rva + lpTargetBinBuffer), 0, sizeof(DWORD) * secDir->size);
+	memcpy((UCHAR*)(secDir->rva + lpTargetBinBuffer + extSize), (UCHAR*)certBuf, sizeof(DWORD) * secDir->size);
+	pe->OptionalHeader->DataDirectory[4].VirtualAddress += extSize;
+	DbgPrint("certificate (size: 0x%I32X) now at offset 0x%I32X", secDir->size, pe->OptionalHeader->DataDirectory[4].VirtualAddress);
+
+
+	// encrypt from oep section to the section before ext section
 	BYTE encoder = 0xff;
-	XorEncode((UCHAR*)(target->raddr + lpTargetBinBuffer), target->vsize, encoder);
+	DWORD encodeSize = ext->raddr - (DWORD)target->raddr;
+	DbgPrint("ext->raddr: 0x%I32X, target->raddr: 0x%I32X", ext->raddr, (DWORD)target->raddr);
+	XorEncode((UCHAR*)(target->raddr + lpTargetBinBuffer), encodeSize, encoder);
+	DbgPrint("Encode from 0x%I32X to 0x%I32X", target->raddr, target->raddr + encodeSize);
 
 	// put decode stub to ext section
-	CreateDecodeStub(target->vaddr, target->vsize, encoder, pe->oep, ext->raddr, (DWORD)newEP);
+	CreateDecodeStub(target->vaddr, encodeSize, encoder, pe->oep, ext->raddr, (DWORD)newEP);
 	memcpy((UCHAR*)(ext->raddr + lpTargetBinBuffer), decodeStub, sizeof(decodeStub));
 	DbgPrint("DecodeStub located to 0x%I64X", (ext->raddr + lpTargetBinBuffer));
 
