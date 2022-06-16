@@ -50,6 +50,53 @@ void ParsePE(PE* pe, UCHAR* lpTargetBinBuffer) {
 	DbgPrint("ImageBase:0x%I64X, OEP:0x%I64X", pe->ImageBase, pe->oep + pe->ImageBase);
 }
 
+void ShiftAddrOfHeaders(PE* pe, UCHAR* lpTargetBinBuffer, UINT *sizeIncrease) {
+	// shift optional header addresses
+	pe->oep += *sizeIncrease;
+	pe->OptionalHeader->BaseOfCode += *sizeIncrease;
+	
+	// shift each data directories' vaddr
+	PIMAGE_DATA_DIRECTORY dataDirectory = (PIMAGE_DATA_DIRECTORY)(pe->NtHeader->OptionalHeader.DataDirectory);
+	for (int i = 0; i < 16; i++) {
+		if (dataDirectory[i].VirtualAddress != 0) {
+			dataDirectory[i].VirtualAddress += *sizeIncrease;
+			DbgPrint("%d dataDirectory present", i);
+		}
+
+		// if it is Relocation Directory
+		if (i == 5) {
+			QWORD relocDirAddr = (QWORD)lpTargetBinBuffer + (QWORD)dataDirectory[i].VirtualAddress;
+			WORD* typeOffsetAddr = (WORD*)(relocDirAddr + sizeof(DWORD)*2);
+			PIMAGE_BASE_RELOCATION relocDir = (PIMAGE_BASE_RELOCATION)relocDirAddr;
+			DWORD relocSize = relocDir->SizeOfBlock - sizeof(DWORD)*2;
+			DbgPrint("relocation table size (without vaddr and size field): 0x%X", relocSize);
+			for (int j = 0; j < relocSize/sizeof(WORD); j++) {
+				// first 4 bit is type and lower 12 bit is offset but doesn't this overflow and overwrite type?
+				typeOffsetAddr[j] += *sizeIncrease;
+			}
+		}
+
+		// if it is Debug Directory
+		if (i == 6) {
+			PIMAGE_DEBUG_DIRECTORY debugDir = (PIMAGE_DEBUG_DIRECTORY)(lpTargetBinBuffer + (QWORD)dataDirectory[i].VirtualAddress);
+			debugDir->AddressOfRawData += *sizeIncrease;
+			debugDir->PointerToRawData += *sizeIncrease;
+		}
+	}
+
+	// shift each section header's vaddr
+	QWORD sectionLocation = (QWORD)IMAGE_FIRST_SECTION(pe->NtHeader);
+	QWORD sectionSize = (QWORD)sizeof(IMAGE_SECTION_HEADER);
+
+	for (int i = 0; i < pe->FileHeader->NumberOfSections; i++) {
+		pe->SectionHeader = (PIMAGE_SECTION_HEADER)sectionLocation;
+		// shifted all sections so shift header's vaddr and raddr too
+		pe->SectionHeader->VirtualAddress += *sizeIncrease;
+		pe->SectionHeader->PointerToRawData += *sizeIncrease;
+		sectionLocation += sectionSize;
+	}
+}
+
 void FindSection(PE* pe, SectionConfig* target, SectionConfig* ext) {
 	QWORD sectionLocation = (QWORD)IMAGE_FIRST_SECTION(pe->NtHeader);
 	QWORD sectionSize = (QWORD)sizeof(IMAGE_SECTION_HEADER);
@@ -78,6 +125,7 @@ void FindSection(PE* pe, SectionConfig* target, SectionConfig* ext) {
 			ext->raddr = pe->SectionHeader->PointerToRawData;
 			ext->rsize = pe->SectionHeader->SizeOfRawData;
 		}
+
 		sectionLocation += sectionSize;
 	}
 }
@@ -124,7 +172,7 @@ void CreateDecodeStub(QWORD SectionVaddr, QWORD SectionVsize, BYTE decoder, QWOR
 	return;
 }
 
-UCHAR* ReadTargetFile(WCHAR* lpTargetFilename, DWORD* dwTargetBinSize, UINT extSize) {
+UCHAR* ReadTargetFile(WCHAR* lpTargetFilename, DWORD* dwTargetBinSize, UINT extSize, UINT extHeaderSize) {
 	HANDLE hTargetBin;
 	DWORD dwReadSize;
 	UCHAR* lpTargetBinBuffer;
@@ -135,14 +183,19 @@ UCHAR* ReadTargetFile(WCHAR* lpTargetFilename, DWORD* dwTargetBinSize, UINT extS
 		Err("No Such File");
 		return 0;
 	}
-	
+
 	*dwTargetBinSize = GetFileSize(hTargetBin, NULL);
 	if (*dwTargetBinSize == -1) {
 		Err("Failed to get file size");
 		return 0;
 	}
 
-	DWORD newSize = *dwTargetBinSize + (DWORD)extSize;
+	DWORD newSize = *dwTargetBinSize + (DWORD)extSize + (DWORD)extHeaderSize + (DWORD)0x1000;
+	// 0x1000 is a buffer since we extend more than extHeaderSize due to section alignment
+	// if extHeaderSize=0x28 and section alignment is 0x20, additional 0x40 is required
+	// 0x1000-0x40 will not be included in the output file since we're specifying only the required size when WriteFile
+	// 0x1000 is not enough if section alignment is more than 0x1000, In that case, error will occur in AddExtSection.
+
 	lpTargetBinBuffer = (UCHAR*)malloc(sizeof(DWORD) * newSize);
 	if (lpTargetBinBuffer == NULL) {
 		Err("Failed to allocate region to read file");
@@ -161,7 +214,7 @@ UCHAR* ReadTargetFile(WCHAR* lpTargetFilename, DWORD* dwTargetBinSize, UINT extS
 	return lpTargetBinBuffer;
 }
 
-BOOL WritePackedFile(WCHAR* lpPackedFilename, UCHAR* lpTargetBinBuffer, DWORD dwTargetBinSize, SectionConfig* target, UINT extSize) {
+BOOL WritePackedFile(WCHAR* lpPackedFilename, UCHAR* lpTargetBinBuffer, DWORD dwTargetBinSize, SectionConfig* target, UINT extSize, UINT *sizeIncreased) {
 	bool bRes;
 
 	*(target->characteristic) |= IMAGE_SCN_MEM_WRITE;
@@ -173,8 +226,8 @@ BOOL WritePackedFile(WCHAR* lpPackedFilename, UCHAR* lpTargetBinBuffer, DWORD dw
 	}
 
 	DWORD dwWriteSize;
-	bRes = WriteFile(hPackedBin, lpTargetBinBuffer, dwTargetBinSize+(DWORD)extSize, &dwWriteSize, NULL);
-	if (!bRes && (dwTargetBinSize+(DWORD)extSize) != dwWriteSize) {
+	bRes = WriteFile(hPackedBin, lpTargetBinBuffer, dwTargetBinSize + (DWORD)extSize + (DWORD)(*sizeIncreased), &dwWriteSize, NULL);
+	if (!bRes && (dwTargetBinSize + (DWORD)extSize + (DWORD)(*sizeIncreased)) != dwWriteSize) {
 		Err("Write Failed");
 		return FALSE;
 	}
@@ -184,26 +237,41 @@ BOOL WritePackedFile(WCHAR* lpPackedFilename, UCHAR* lpTargetBinBuffer, DWORD dw
 	return TRUE;
 }
 
-void AddExtSection(PE* pe, DWORD dwTargetBinSize, UINT extSize) {
+void AddExtSection(PE* pe, UCHAR* lpTargetBinBuffer, DWORD dwTargetBinSize, UINT extSize, UINT extHeaderSize, UINT* sizeIncrease) {
 	// appending additional data on EOF is done in ReadTargetFile
-	
+
 	// change size of image
 	DWORD newSizeOfImage = 0;
 	while (newSizeOfImage <= extSize)
 		newSizeOfImage += pe->OptionalHeader->SectionAlignment;
-	
-	pe->OptionalHeader->SizeOfImage += newSizeOfImage;
 
+	pe->OptionalHeader->SizeOfImage += newSizeOfImage;
+	
 	// determine ext location and section before ext
 	QWORD extSecHeaderLocation = (QWORD)IMAGE_FIRST_SECTION(pe->NtHeader) + ((QWORD)sizeof(IMAGE_SECTION_HEADER) * pe->FileHeader->NumberOfSections);
 	PIMAGE_SECTION_HEADER extSecHeader = (PIMAGE_SECTION_HEADER)(extSecHeaderLocation);
 	QWORD beforeSecHeaderLocation = (QWORD)IMAGE_FIRST_SECTION(pe->NtHeader) + ((QWORD)sizeof(IMAGE_SECTION_HEADER) * (pe->FileHeader->NumberOfSections - 1));
 	PIMAGE_SECTION_HEADER beforeSecHeader = (PIMAGE_SECTION_HEADER)beforeSecHeaderLocation;
 
-	// change number of sectiosns
+	// change number of sections
 	pe->FileHeader->NumberOfSections += 1;
 	DbgPrint("extSecHeaderLocation: 0x%I64X, NumberOfSections: %d", extSecHeaderLocation, pe->FileHeader->NumberOfSections);
 	DbgPrint("beforeSecHeaderLocation: 0x%I64X, beforeSecHeader: %s", beforeSecHeaderLocation, beforeSecHeader->Name);
+	
+
+	// shift all other sections (to allocate space for ext section header attributes entry)
+	//  dwTargetBinSize(whole file size) = headerSize + sectionsSize
+	if (pe->OptionalHeader->SectionAlignment > 0x1000)
+		Err("increase buffer to more than 0x1000");
+
+	*sizeIncrease = 0;
+	while (*sizeIncrease <= extHeaderSize)
+		*sizeIncrease += pe->OptionalHeader->SectionAlignment; // sections need to be aligned
+	pe->OptionalHeader->SizeOfImage += *sizeIncrease;
+	pe->OptionalHeader->SizeOfHeaders += extHeaderSize;
+	QWORD headerSize = extSecHeaderLocation - (QWORD)lpTargetBinBuffer;
+	DWORD sectionsSize = dwTargetBinSize - headerSize;
+	memmove((UCHAR*)(extSecHeaderLocation + *sizeIncrease), (UCHAR*)extSecHeaderLocation, sectionsSize);
 
 
 	// change ext section attributes
@@ -212,6 +280,7 @@ void AddExtSection(PE* pe, DWORD dwTargetBinSize, UINT extSize) {
 		vaddrOffset += pe->OptionalHeader->SectionAlignment;
 
 	char secname[5] = ".ext";
+	memset((char*)extSecHeader->Name, 0, 8);
 	strncpy_s((char*)extSecHeader->Name, 8, secname, 5);
 	extSecHeader->Misc.VirtualSize = extSize;
 	extSecHeader->VirtualAddress = beforeSecHeader->VirtualAddress + vaddrOffset;
@@ -243,7 +312,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	DWORD dwTargetBinSize;
 	UCHAR* lpTargetBinBuffer;
 	UINT extSize = 400;
-	lpTargetBinBuffer = ReadTargetFile(lpTargetFilename, &dwTargetBinSize, extSize);
+	UINT extHeaderSize = 0x28; // sizeof(IMAGE_SECTION_HEADER) と同じ
+	UINT sizeIncrease = 0;
+	lpTargetBinBuffer = ReadTargetFile(lpTargetFilename, &dwTargetBinSize, extSize, extHeaderSize);
 	DbgPrint("lpTargetBinBuffer: 0x%I64X", lpTargetBinBuffer);
 
 	// locate address of headers
@@ -252,8 +323,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 
 	// add ext section to put decode stub
-	AddExtSection(pe, dwTargetBinSize, extSize);
+	// also, shift all sections to allocate space for ext section header entry
+	AddExtSection(pe, lpTargetBinBuffer, dwTargetBinSize, extSize, extHeaderSize, &sizeIncrease);
 
+	// shift address value of pe header
+	ShiftAddrOfHeaders(pe, lpTargetBinBuffer, &sizeIncrease);
 
 	// find section to encrypt(target) and to put decodestub(ext)
 	SectionConfig* target = (SectionConfig*)malloc(sizeof(SectionConfig));
@@ -265,7 +339,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	// new entrypoint
 	QWORD newEP = ext->vaddr - pe->ImageBase;
 
-	// エントリーポイントを含むセクションを暗号化
+	// xor .text section with one byte 0xFF
 	BYTE encoder = 0xff;
 	XorEncode((UCHAR*)(target->raddr + lpTargetBinBuffer), target->vsize, encoder);
 
@@ -280,7 +354,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 
 	// write packed file
-	if (WritePackedFile(lpPackedFilename, lpTargetBinBuffer, dwTargetBinSize, target, extSize) == FALSE) {
+	if (WritePackedFile(lpPackedFilename, lpTargetBinBuffer, dwTargetBinSize, target, extSize, &sizeIncrease) == FALSE) {
 		Err("Writing packed file failed");
 		return 1;
 	}
