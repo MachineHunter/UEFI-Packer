@@ -66,13 +66,13 @@ void ShiftAddrOfHeaders(PE* pe, UCHAR* lpTargetBinBuffer, UINT *sizeIncrease) {
 		// if it is Relocation Directory
 		if (i == 5) {
 			QWORD relocDirAddr = (QWORD)lpTargetBinBuffer + (QWORD)dataDirectory[i].VirtualAddress;
-			WORD* typeOffsetAddr = (WORD*)(relocDirAddr + sizeof(DWORD)*2);
-			PIMAGE_BASE_RELOCATION relocDir = (PIMAGE_BASE_RELOCATION)relocDirAddr;
-			DWORD relocSize = relocDir->SizeOfBlock - sizeof(DWORD)*2;
-			DbgPrint("relocation table size (without vaddr and size field): 0x%X", relocSize);
-			for (int j = 0; j < relocSize/sizeof(WORD); j++) {
-				// first 4 bit is type and lower 12 bit is offset but doesn't this overflow and overwrite type?
-				typeOffsetAddr[j] += *sizeIncrease;
+			DWORD relocDirSize = dataDirectory[i].Size;
+
+			while (relocDirSize > 0) {
+				*(QWORD*)relocDirAddr += *sizeIncrease;
+				PIMAGE_BASE_RELOCATION relocDir = (PIMAGE_BASE_RELOCATION)relocDirAddr;
+				relocDirSize -= relocDir->SizeOfBlock;
+				relocDirAddr += relocDir->SizeOfBlock;
 			}
 		}
 
@@ -146,7 +146,7 @@ UCHAR decodeStub[] = {
 	0x48, 0x01, 0xC6,                                             // 34 add rsi, rax
 	0x48, 0xB9, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,   // 44 movabs rcx, SectionSize 
 	0xB0, 0xFF,                                                   // 46 mov al, decoder
-	0x30, 0x06,                                                   // 48 LOOP: xor byte ptr [rsi], al
+	0x30, 0x06,                                                   // 48 LOOP: xor byte ptr [rsi], al 0x30, 0x06
 	0x48, 0xFF, 0xC6,                                             // 51 inc rsi
 	0x48, 0xFF, 0xC9,                                             // 54 dec rcx
 	0x75, 0xF6,                                                   // 56 jne LOOP
