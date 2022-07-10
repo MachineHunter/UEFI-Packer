@@ -1,5 +1,5 @@
 [Defines]
   DEC_SPECIFICATION              = 0x00010005
   PACKAGE_NAME                   = FirstPkg
-  PACKAGE_GUID                   = <Your GUID genrated by uuidgen>
+  PACKAGE_GUID                   = 75281f80-8657-4cf2-837f-04d73179c590
   PACKAGE_VERSION                = 0.1

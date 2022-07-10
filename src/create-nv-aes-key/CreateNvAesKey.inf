@@ -1,0 +1,21 @@
+[Defines]
+  INF_VERSION                    = 0x00010006
+  BASE_NAME                      = CreateNvAesKey
+  FILE_GUID                      = 5765e8dd-c97a-4ce2-891e-9e24b94d654b
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = UefiMain
+
+[Sources]
+  CreateNvAesKey.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiLib
+	ShellCEntryLib
+	UefiBootServicesTableLib
+
+[Protocols]
+  gEfiTcg2ProtocolGuid
