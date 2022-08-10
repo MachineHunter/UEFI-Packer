@@ -1,13 +1,14 @@
 [Defines]
   INF_VERSION                    = 0x00010006
-  BASE_NAME                      = MyDxe
+  BASE_NAME                      = MyDxe2
   FILE_GUID                      = 9d46dccd-ea11-4808-93e9-9b7021889b2d
   MODULE_TYPE                    = DXE_DRIVER
   VERSION_STRING                 = 1.0
   ENTRY_POINT                    = MyDxeEntry
 
 [Sources]
-	MyDxe.c
+	MyDxe2.h
+	MyDxe2.c
 
 [Packages]
 	MdePkg/MdePkg.dec
@@ -16,10 +17,12 @@
 [LibraryClasses]
 	UefiDriverEntryPoint
 	UefiRuntimeServicesTableLib
+	UefiBootServicesTableLib
 	UefiLib
 	PrintLib
 
 [Protocols]
+	gEfiDummyProtocolGuid   ## PRODUCES
 
 [Depex]
 	TRUE

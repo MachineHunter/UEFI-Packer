@@ -213,7 +213,8 @@
   gEfiMdeModulePkgTokenSpaceGuid.PcdRecoveryFileName|L"FVMAIN.FV"
 
 [Components]
-  MdeModulePkg/MyDxe/MyDxe.inf
+  MdeModulePkg/MyDxe/MyDxe2.inf
+  # MdeModulePkg/MyDxe/Measure.inf
   MdeModulePkg/Application/HelloWorld/HelloWorld.inf
   MdeModulePkg/Application/DumpDynPcd/DumpDynPcd.inf
   MdeModulePkg/Application/MemoryProfileInfo/MemoryProfileInfo.inf

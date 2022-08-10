@@ -5,7 +5,7 @@
 
 [Defines]
   INF_VERSION                = 0x00010017
-  BASE_NAME                  = MyDxe
+  BASE_NAME                  = MyDxe2
   FILE_GUID                  = 9d46dccd-ea11-4808-93e9-9b7021889b2d
   MODULE_TYPE                = DXE_DRIVER
   VERSION_STRING             = 1.0
@@ -13,14 +13,18 @@
 
 [Packages.X64]
   MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
 
 [Binaries.X64]
-  PE32|MyDxe.efi
-  DXE_DEPEX|MyDxe.depex
+  PE32|MyDxe2.efi
+  DXE_DEPEX|MyDxe2.depex
 
 [PatchPcd.X64]
 
 [Protocols.X64]
+  ## PRODUCES
+  gEfiDummyProtocolGuid
+
   ## SOMETIMES_CONSUMES
   gEfiDevicePathProtocolGuid
 
